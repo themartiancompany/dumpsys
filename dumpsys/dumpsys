@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+
+# SPDX-License-Identifier: AGPL-3.0
+
+#    -----------------------------------------------------
+#    Copyright © 2024, 2025, 2026  Pellegrino Prevete
+#
+#    All rights reserved
+#    -----------------------------------------------------
+#
+#    This program is free software: you can redistribute
+#    it and/or modify it under the terms of the
+#    GNU Affero General Public License as published by
+#    the Free Software Foundation, either version 3 of
+#    the License, or (at your option) any later version.
+#
+#    This program is distributed in the hope that it
+#    will be useful, but WITHOUT ANY WARRANTY;
+#    without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#    See the GNU Affero General Public License for
+#    more details.
+#
+#    You should have received a copy of the
+#    GNU Affero General Public License
+#    along with this program.
+#    If not, see <https://www.gnu.org/licenses/>.
+
+_bin="$(
+  dirname \
+    "$(command \
+         -v \
+         "env")")"
+_lib="${_bin}/../lib"
+_share="${_bin}/../share"
+_crash_bash="${_lib}/libcrash-bash/crash-bash"
+_sourced \
+  "${_crash_bash}" \
+  2>"/dev/null" \
+  1>"/dev/null" || \
+source \
+  "${_crash_bash}"
+
+_root_requirements() {
+  _check_cmd \
+    "awk" \
+    "gawk"
+  _check_cmd \
+    "sdk-version" \
+    "android-utils"
+  _check_cmd \
+    "sed"
+  _check_cmd \
+    "su"
+}
+
+# shellcheck disable=SC2034
+_global_variables() {
+  get_date=""
+  get_mode=""
+  root_disable=""
+  dumpsys_opts=()
+  color=""
+  quiet=""
+}
+
+_root_get() {
+  if [[ "${_get_mode}" == "su" ]]; then
+    _dumpsys="$(
+      su \
+        -c \
+        "${_dumpsys_bin} ${_dumpsys_opts[*]}" || \
+        true)"
+  elif [[ "${_get_mode}" == "su" ]]; then
+    _dumpsys="$(
+      sudo \
+        "${_dumpsys_bin}" \
+        "${_dumpsys_opts[@]}" || \
+        true)"
+  else
+    _msg=(
+      "Unknown mode '${_get_mode}'."
+    )
+    _msg_error \
+      "${_msg[*]}" \
+      1
+  fi
+}
+
+_dumpsys() {
+  local \
+    _root_disable="${1}" \
+    _command \
+    _command_arg \
+    _dumpsys_bin \
+    _dumpsys_opts=() \
+    _msg=() \
+    _user_level
+  shift \
+    1
+  _command=""
+  if (( 0 < "$#" )); then
+    _command="${1}"
+  fi
+  if (( 0 < "$#" )); then
+    _command_arg="${2}"
+  fi
+  _dumpsys_opts+=(
+    "$@"
+  )
+  _dumpsys_bin="/system/bin/dumpsys"
+  _user_level="n"
+  if [[ "${_root_disable}" == "y" ]]; then
+    if [[ "${_command}" == "activity" && \
+          "${_command_arg}" == "activities" ]]; then
+      _user_level="y"
+    fi
+  fi
+  _msg=(
+    "Running"
+    "'${_dumpsys_bin}"
+       "${_dumpsys_opts[*]}'."
+  )
+  _msg_info \
+    "${_msg[*]}"
+  if [[ "${_user_level}" == "n" ]]; then
+    _root_get
+  elif [[ "${_user_level}" == "y" ]]; then
+    _dumpsys="$(
+      "${_dumpsys_bin}" \
+        "${_dumpsys_opts[@]}" || \
+      true)"
+    _dumpsys_lines="$(
+      echo \
+        "${_dumpsys}" |
+        wc \
+          -l)"
+    if (( "${_dumpsys_lines}" == 1 )); then
+      if [[ "${_dumpsys}" == "${_permissions_error_start[*]}"* && \
+            "${_dumpsys}" == *"${_permissions_error_end[*]}" ]]; then
+        _pid_word="${_dumpsys#${_permissions_error_start[*]}}"
+        _pid="${_pid_word%, uid=* ${_permissions_error_end[*]}}"
+        _uid="${_pid_word#${_pid}, uid=*}"
+        _msg=(
+          "User with uid '${_uid}'"
+          "has no permission to run"
+          "'${_dumpsys_bin} ${_dumpsys_opts[*]}'."
+          "Consider running"
+          "'sudo"
+              "pm"
+                "grant"
+                  "com.termux"
+                  "android.permission.PACKAGE_USAGE_STATS'"
+          "to enable the termux terminal application user"
+          "to run some 'dumpsys activity activities'"
+          "without root permission."
+        )
+        _msg_info \
+          "${_msg[*]}"
+        if [[ "${_root_disable}" == "n" ]]; then
+          _root_get
+        fi
+      fi
+    fi
+  fi
+  if [[ "${_dumpsys}" == "" ]]; then
+    _msg=(
+      "Error running '${_dumpsys_bin}"
+      "${_dumpsys_opts[*]}'."
+    )
+    _msg_error \
+      "${_msg[*]}" \
+      1
+  else
+    _msg=(
+      "Obtained"
+      "'${_dumpsys_bin} ${_dumpsys_opts[*]}'."
+    )
+    _msg_info \
+      "${_msg[*]}"
+  fi
+  echo \
+    "${_dumpsys}"
+}
+
+_auto_detect_mode() {
+  local \
+    _os \
+    _msg=()
+  _os="$(
+    uname \
+      -o)"
+  if [[ "${_os}" == "Android" ]]; then
+    _root_requirements
+    echo \
+      "su"
+  elif [[ "${_os}" == "GNU/Linux" ]]; then
+    _msg=(
+      "Do you want dumpsys?"
+      "If you run GNOME Shell"
+      "try running 'lg' with Alt+F2."
+    )
+    _msg_error \
+      "${_msg[*]}" \
+      1
+  fi
+}
+
+_set_overrides() {
+  if [[ -v override_color ]]; then
+    color="${override_color}"
+  elif [[ -z "${color}" ]]; then
+    color="n"
+  fi
+  if [[ -v override_quiet ]]; then
+    quiet="${override_quiet}"
+  elif [[ -z "${quiet}" ]]; then
+    quiet="y"
+  fi
+  _set_override \
+    "get" \
+    "date" \
+    "$(_get_date_human)"
+  _set_override \
+    "get" \
+    "mode" \
+    "$(_auto_detect_mode)"
+  _set_override \
+    "root" \
+    "disable" \
+    "n"
+}
+
+# Shows configuration options.
+_show_config() {
+  _msg_info "${app_name} configuration"
+  _msg_info "     Got activity at date:   ${get_date}"
+}
+
+# Show help usage, with an exit status.
+# $1: exit status number.
+_usage() {
+  local \
+    _exit_code="${1}" \
+    _usage_text
+  IFS='' \
+    read \
+      -r \
+      -d '' \
+      _usage_text << \
+        ENDUSAGETEXT || true
+
+Wrapper for the 'dumpsys' program with minimal permissions.
+
+Usage:
+
+  ${app_name}
+    [options] --
+    [dumpsys-options]
+    [dumpsys-args]
+
+  options:
+
+     -m <mode>      How to elevate to root.
+                    It can be 'su' or 'sudo'.
+                    Default: ${get_mode}
+
+     -u             Force to run 'dumpsys' as an user.
+                    Default: ${root_disable}
+
+     -h             This message.
+
+     -c             Enable color output.
+
+     -v             Enable verbose output
+
+      
+
+ENDUSAGETEXT
+  _printf \
+    '%s\n' \
+    "${_usage_text}"
+  exit \
+    "${_exit_code}"
+}
+
+_globals
+_global_variables
+# shellcheck disable=SC2004
+# shellcheck disable=SC2034
+while \
+  getopts \
+    'ucvh?' \
+    arg; do
+  case \
+    "${arg}" in
+    m)
+      override_get_mode="y" ;;
+    u)
+      override_user_level="y" ;;
+    c)
+      override_color="y" ;;
+    v)
+      override_quiet="n" ;;
+    h|?)
+      _set_overrides
+      _usage \
+        0 ;;
+    *)
+      _msg=(
+        "Invalid argument '${arg}'."
+      )
+      _msg_error \
+        "${_msg[*]}" \
+        0
+      _set_overrides
+      _usage \
+        1 ;;
+  esac
+done
+shift \
+  $((
+    OPTIND - 1 ))
+_set_overrides
+dumpsys_opts=(
+  "$@"
+)
+app_opts=(
+  "${get_mode}"
+  "${root_disable}"
+  "${dumpsys_opts[@]}"
+)
+_show_config
+_dumpsys \
+  "${app_opts[@]}"
+
+# vim:set sw=2 sts=-1 et:
